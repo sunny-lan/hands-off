@@ -1,6 +1,7 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <queue>
+#include <Windows.h>
 using namespace cv;
 using namespace std;
 
@@ -168,7 +169,7 @@ const char* minSpeedTrackbar = "Min px/tick";
 const char* debounceTrackbar = "Debounce ticks";
 
 int minSpeed = 160;
-int debounceTick = 60;
+int debounceTick = 160;
 void initProcess() {
 	createTrackbar(minSpeedTrackbar, controlWindow, &minSpeed, frameHeight + frameWidth);
 	createTrackbar(debounceTrackbar, controlWindow, &debounceTick, getTickFrequency() / tickMult);
@@ -199,16 +200,10 @@ void process(Point center, Point last, Mat frame) {
 		}
 
 		if (action != -1) {
-			if (lastAction == action) {
-				int64 currTick = getTickCount();
-				if (currTick - lastActionTick > debounceTick*tickMult) {
-					actionCallback(action, frame);
-					lastActionTick = currTick;
-					lastAction = action;
-				}
-			}
-			else {
+			int64 currTick = getTickCount();
+			if (currTick - lastActionTick > debounceTick * tickMult) {
 				actionCallback(action, frame);
+				lastActionTick = currTick;
 				lastAction = action;
 			}
 		}
@@ -223,8 +218,37 @@ void process(Point center, Point last, Mat frame) {
 	}
 }
 
-void myActionCallback(int aciton, Mat frame) {
-	text(frame, "Action: " + to_string(aciton));
+void sendKey(WORD vkey) {
+	INPUT input;
+	input.type = INPUT_KEYBOARD;
+	input.ki.wScan = MapVirtualKey(vkey, MAPVK_VK_TO_VSC);
+	input.ki.time = 0;
+	input.ki.dwExtraInfo = 0;
+	input.ki.wVk = vkey;
+	input.ki.dwFlags = 0; // there is no KEYEVENTF_KEYDOWN
+	SendInput(1, &input, sizeof(INPUT));
+
+	input.ki.dwFlags = KEYEVENTF_KEYUP;
+	SendInput(1, &input, sizeof(INPUT));
+}
+
+void myActionCallback(int action, Mat frame) {
+	if (action == 1) {
+		text(frame, "Volume down");
+		sendKey(VK_VOLUME_DOWN);
+	}
+	if (action == 2) {
+		text(frame, "Volume up");
+		sendKey(VK_VOLUME_UP);
+	}
+	if (action == 4) {
+		text(frame, "Next");
+		sendKey(VK_MEDIA_NEXT_TRACK);
+	}
+	if (action == 3) {
+		text(frame, "Prev");
+		sendKey(VK_MEDIA_PREV_TRACK);
+	}
 }
 
 int main(int, char**)
@@ -238,7 +262,7 @@ int main(int, char**)
 	frameWidth = cap.get(CAP_PROP_FRAME_WIDTH),
 		frameHeight = cap.get(CAP_PROP_FRAME_HEIGHT);
 
-	namedWindow(controlWindow);
+	namedWindow(controlWindow, WINDOW_NORMAL);
 
 	calibFilter();
 	calibContour();
