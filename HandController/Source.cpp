@@ -2,11 +2,12 @@
 #include <iostream>
 #include <queue>
 #include <Windows.h>
+#include "UnipathMatch\GeometricRecognizer.h"
 using namespace cv;
 using namespace std;
 
 void text(Mat frame, String text, Point loc = Point(10, 20), Scalar color = Scalar(255, 0, 0)) {
-	putText(frame, text, loc, FONT_HERSHEY_SIMPLEX, 1, color);
+	putText(frame, text, loc, FONT_HERSHEY_SIMPLEX, 1, color, 2);
 }
 
 const char* controlWindow = "Control window";
@@ -29,7 +30,7 @@ void calibFilter() {
 	createTrackbar(satRangeTrackbar, controlWindow, &satRange, 256);
 	createTrackbar(valRangeTrackbar, controlWindow, &valRange, 256);
 
-	//calibration loop
+	//calculate size of calibration rectangle
 	int rectWidth = 100,
 		rectHeight = 100;
 	Point rectStart(frameWidth / 2 - rectWidth / 2, frameHeight / 2 - rectHeight / 2);
@@ -50,7 +51,7 @@ void calibFilter() {
 		inRange(frame, avg - range, avg + range, frame);
 
 		//draw overlay
-		rectangle(frame, rectStart - border, rectEnd + border, Scalar(255, 0, 0));
+		rectangle(frame, rectStart - border, rectEnd + border, Scalar(255));
 		text(frame, "Filter calibration");
 
 		imshow(imgWindow, frame);
@@ -59,7 +60,7 @@ void calibFilter() {
 	return;
 }
 
-const char* minContourTrackbar = "Min contour area";
+const char* minContourTrackbar = "Min area";
 
 int minContourArea = 1000;
 void calibContour() {
@@ -77,8 +78,9 @@ void calibContour() {
 		vector<vector<Point>> contours;
 		findContours(buffer, contours, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE);
 
-		vector<int> areas;
-		int maxi = -1;
+		//find largest area contour
+		vector<double> areas;
+		double maxi = -1;
 		int maxidx = -1;
 		for (int i = 0; i < contours.size(); i++) {
 			areas.push_back(contourArea(contours[i]));
@@ -90,7 +92,7 @@ void calibContour() {
 
 		//draw overlay
 		for (int i = 0; i < contours.size(); i++)
-			if (areas[i] > minContourArea)
+			if (areas[i] > minContourArea) //filter out too small contours
 				drawContours(frame, contours, i, i == maxidx ? Scalar(0, 0, 255) : Scalar(255, 0, 0), 2);
 
 		text(frame, "Contour calibration");
@@ -103,7 +105,7 @@ void calibContour() {
 void initProcess();
 void process(Point center, Point last, Mat frame);
 
-const char* tickPeriodTrackbar = "Tick period";
+const char* tickPeriodTrackbar = "Tick time";
 const int64 tickMult = 10000;
 const Point none(-1, -1);
 
@@ -114,7 +116,10 @@ void run() {
 
 	queue<pair<int64, Point>> prevPoints;
 
+	int64 lastFrameTick = 0;
+
 	while (true) {
+		int64 currTime = getTickCount();
 		//capture frame
 		Mat frame;
 		cap >> frame;
@@ -143,7 +148,7 @@ void run() {
 		Point center = none;
 		if (maxIdx != -1) {
 			Moments m = moments(contours[maxIdx]);
-			center = Point(m.m10 / m.m00, m.m01 / m.m00);
+			center = Point((int)(m.m10 / m.m00), (int)(m.m01 / m.m00));
 			prevPoints.push({ getTickCount(), center });
 		}
 
@@ -160,19 +165,26 @@ void run() {
 
 		process(center, last, frame);
 
+		//Display FPS
+		text(frame, "FPS: " + to_string(1 / ((currTime - lastFrameTick) / getTickFrequency())), Point(10, frameHeight));
+		lastFrameTick = currTime;
+
 		imshow(imgWindow, frame);
 		if (waitKey(30) >= 0) break;
 	}
 }
 
-const char* minSpeedTrackbar = "Min px/tick";
-const char* debounceTrackbar = "Debounce ticks";
+const char* minXSpeedTrackbar = "Min dx/t";
+const char* minYSpeedTrackbar = "Min dy/t";
+const char* debounceTrackbar = "Debounce";
 
-int minSpeed = 160;
+int minXSpeed = 160;
+int minYSpeed = 100;
 int debounceTick = 160;
 void initProcess() {
-	createTrackbar(minSpeedTrackbar, controlWindow, &minSpeed, frameHeight + frameWidth);
-	createTrackbar(debounceTrackbar, controlWindow, &debounceTick, getTickFrequency() / tickMult);
+	createTrackbar(minXSpeedTrackbar, controlWindow, &minXSpeed, frameHeight + frameWidth);
+	createTrackbar(minYSpeedTrackbar, controlWindow, &minYSpeed, frameHeight + frameWidth);
+	createTrackbar(debounceTrackbar, controlWindow, &debounceTick, (int)getTickFrequency() / tickMult);
 }
 
 void(*actionCallback)(int, Mat);
@@ -184,22 +196,24 @@ void process(Point center, Point last, Mat frame) {
 		int dx = center.x - last.x;
 		int dy = center.y - last.y;
 
+		//check movement thresholds
 		int action = -1;
-		if (dy > minSpeed) {
+		if (dy > minYSpeed) {
 			action = 1;
 		}
-		else if (dy < -minSpeed) {
+		else if (dy < -minYSpeed) {
 			action = 2;
 		}
 
-		if (dx > minSpeed) {
+		if (dx > minXSpeed) {
 			action = 3;
 		}
-		else if (dx < -minSpeed) {
+		else if (dx < -minXSpeed) {
 			action = 4;
 		}
 
 		if (action != -1) {
+			//debounce
 			int64 currTick = getTickCount();
 			if (currTick - lastActionTick > debounceTick * tickMult) {
 				actionCallback(action, frame);
@@ -253,18 +267,24 @@ void myActionCallback(int action, Mat frame) {
 
 int main(int, char**)
 {
+	cvUseOptimized(true);
+
 	actionCallback = myActionCallback;
+
+	setNumThreads(0);//limit cpu usage
 
 	cap = VideoCapture(0);
 	if (!cap.isOpened())  // check if we succeeded
 		return -1;
 
-	frameWidth = cap.get(CAP_PROP_FRAME_WIDTH),
-		frameHeight = cap.get(CAP_PROP_FRAME_HEIGHT);
+	frameWidth = (int)cap.get(CAP_PROP_FRAME_WIDTH);
+	frameHeight = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
 
 	namedWindow(controlWindow, WINDOW_NORMAL);
 
 	calibFilter();
 	calibContour();
 	run();
+
+	cap.release();
 }
